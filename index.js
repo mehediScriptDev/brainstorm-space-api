@@ -6,6 +6,7 @@ dotenv.config();
 const app = express()
 const port = process.env.PORT || 3000
 const uri = process.env.MONGODB_URI;
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
@@ -20,6 +21,15 @@ async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
+
+    const db = client.db("IdeaVault");
+    const IdeaVaultData = db.collection("Ideas");
+
+    app.post("/ideas", async (req, res) => {
+      const newIDea = req.body;
+      IdeaVaultData.insertOne(newIDea);
+    });
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
