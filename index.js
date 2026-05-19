@@ -1,41 +1,69 @@
 
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const express = require("express")
+const cors = require("cors")
 const dotenv =require("dotenv")
 dotenv.config();
 const app = express()
-const port = process.env.PORT || 3000
+const port = process.env.PORT || 8000
 const uri = process.env.MONGODB_URI;
+
+app.use(cors())
+app.use(express.json())
+
+let ideasCollection = null;
+let memoryIdeas = [];
 
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
-});
+
+const client = uri
+  ? new MongoClient(uri, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      }
+    })
+  : null;
+
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
-
-    const db = client.db("IdeaVault");
-    const IdeaVaultData = db.collection("Ideas");
+    if (client) {
+      await client.connect();
+      const db = client.db("IdeaVault");
+      ideasCollection = db.collection("Ideas");
+      await client.db("admin").command({ ping: 1 });
+      console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    } else {
+      console.warn("MONGODB_URI is missing. Using in-memory ideas storage.");
+    }
 
     app.post("/ideas", async (req, res) => {
-      const newIDea = req.body;
-      IdeaVaultData.insertOne(newIDea);
+      const newIdea = req.body || {};
+
+      if (ideasCollection) {
+        const result = await ideasCollection.insertOne(newIdea);
+        return res.status(201).json({ ...newIdea, _id: result.insertedId });
+      }
+
+      memoryIdeas.unshift(newIdea);
+      return res.status(201).json(newIdea);
     });
 
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    app.get("/ideas", async (req, res) => {
+      if (ideasCollection) {
+        const ideas = await ideasCollection.find({}).sort({ createdAt: -1 }).toArray();
+        return res.json(ideas);
+      }
+
+      return res.json(memoryIdeas);
+    });
   } finally {
-    // Ensures that the client will close when you finish/error
-    await client.close();
+    if (client) {
+      await client.close();
+    }
   }
 }
 run().catch(console.dir);
