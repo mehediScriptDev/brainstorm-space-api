@@ -25,7 +25,7 @@ app.get("/", (req, res) => {
 });
 
 const client = uri
-  ? new MongoClient(uri, {
+  ? new MongoClient(uri, { 
       serverApi: {
         version: ServerApiVersion.v1,
         strict: true,
