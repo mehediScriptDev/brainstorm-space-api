@@ -313,6 +313,27 @@ app.delete("/ideas/:id", requireAuth, async (req, res) => {
   }
 });
 
+// Profile update: update authorName/photo for a user across ideas and comments
+app.put("/profile", requireAuth, async (req, res) => {
+  try {
+    const { email, name, photoUrl } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    if (ideasCollection) {
+      await ideasCollection.updateMany({ authorEmail: email }, { $set: { authorName: name, authorPhoto: photoUrl } });
+    } else {
+      // in-memory fallback
+      memoryIdeas = memoryIdeas.map((idea) => (idea.authorEmail === email ? { ...idea, authorName: name, authorPhoto: photoUrl } : idea));
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to update profile", error: error.message });
+  }
+});
+
 async function startServer() {
   try {
     if (client) {
