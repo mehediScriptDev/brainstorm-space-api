@@ -16,7 +16,9 @@ app.use(cors());
 app.use(express.json());
 
 let ideasCollection = null;
+let commentsCollection = null;
 let memoryIdeas = [];
+let memoryComments = [];
 
 app.get("/", (req, res) => {
   res.send("IdeaVault API is running");
@@ -59,6 +61,15 @@ function normalizeIdea(document) {
   normalized.commentsCount = Number(normalized.commentsCount || 0);
 
   return normalized;
+}
+
+function normalizeComment(doc) {
+  if (!doc) return null;
+  const c = { ...doc };
+  if (c._id) c._id = c._id.toString();
+  if (!c.id) c.id = c._id || `comment-${Date.now()}`;
+  c.timestamp = c.timestamp || new Date().toISOString();
+  return c;
 }
 
 function getBearerToken(req) {
@@ -248,6 +259,117 @@ app.get("/ideas/:id", async (req, res) => {
   }
 });
 
+// Comments: persistence for idea discussions
+app.get("/ideas/:id/comments", async (req, res) => {
+  try {
+    const ideaId = req.params.id;
+    if (commentsCollection) {
+      const docs = await commentsCollection.find({ ideaId }).sort({ timestamp: -1 }).toArray();
+      return res.json(docs.map(normalizeComment));
+    }
+
+    return res.json(memoryComments.filter((c) => c.ideaId === ideaId).map(normalizeComment));
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to load comments", error: error.message });
+  }
+});
+
+app.post("/ideas/:id/comments", requireAuth, async (req, res) => {
+  try {
+    const ideaId = req.params.id;
+    const { text, authorName, authorEmail, authorPhoto } = req.body || {};
+    if (!text) return res.status(400).json({ message: "Comment text is required" });
+
+    const newComment = normalizeComment({
+      id: `comment-${Date.now()}`,
+      ideaId,
+      text,
+      authorName: authorName || (req.auth && req.auth.email ? req.auth.name || "" : ""),
+      authorEmail: authorEmail || (req.auth && req.auth.email ? req.auth.email : ""),
+      authorPhoto: authorPhoto || null,
+      timestamp: new Date().toISOString()
+    });
+
+    if (commentsCollection) {
+      const result = await commentsCollection.insertOne(newComment);
+      // increment idea commentsCount
+      if (ideasCollection) {
+        await ideasCollection.updateOne({ $or: [{ id: ideaId }, { _id: toObjectId(ideaId) }] }, { $inc: { commentsCount: 1 } });
+      }
+      return res.status(201).json({ ...newComment, _id: result.insertedId.toString() });
+    }
+
+    memoryComments.unshift(newComment);
+    // update in-memory idea count
+    memoryIdeas = memoryIdeas.map((i) => (i.id === ideaId ? { ...i, commentsCount: (i.commentsCount || 0) + 1 } : i));
+    return res.status(201).json(newComment);
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to create comment", error: error.message });
+  }
+});
+
+app.put("/comments/:id", requireAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { text } = req.body || {};
+    if (!text) return res.status(400).json({ message: "Comment text is required" });
+
+    if (commentsCollection) {
+      const existing = await commentsCollection.findOne({ $or: [{ id }, { _id: toObjectId(id) }] });
+      if (!existing) return res.status(404).json({ message: "Comment not found" });
+      // optional: enforce ownership if auth payload present
+      if (req.auth && existing.authorEmail && req.auth.email && existing.authorEmail !== req.auth.email) {
+        return res.status(403).json({ message: "Not allowed to edit this comment" });
+      }
+      await commentsCollection.updateOne({ $or: [{ id }, { _id: toObjectId(id) }] }, { $set: { text } });
+      const updated = await commentsCollection.findOne({ $or: [{ id }, { _id: toObjectId(id) }] });
+      return res.json(normalizeComment(updated));
+    }
+
+    const idx = memoryComments.findIndex((c) => c.id === id || c._id === id);
+    if (idx === -1) return res.status(404).json({ message: "Comment not found" });
+    const existing = memoryComments[idx];
+    if (req.auth && existing.authorEmail && req.auth.email && existing.authorEmail !== req.auth.email) {
+      return res.status(403).json({ message: "Not allowed to edit this comment" });
+    }
+    memoryComments[idx] = { ...memoryComments[idx], text };
+    return res.json(normalizeComment(memoryComments[idx]));
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to update comment", error: error.message });
+  }
+});
+
+app.delete("/comments/:id", requireAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (commentsCollection) {
+      const existing = await commentsCollection.findOne({ $or: [{ id }, { _id: toObjectId(id) }] });
+      if (!existing) return res.status(404).json({ message: "Comment not found" });
+      if (req.auth && existing.authorEmail && req.auth.email && existing.authorEmail !== req.auth.email) {
+        return res.status(403).json({ message: "Not allowed to delete this comment" });
+      }
+      await commentsCollection.deleteOne({ $or: [{ id }, { _id: toObjectId(id) }] });
+      // decrement idea commentsCount
+      if (ideasCollection) {
+        await ideasCollection.updateOne({ $or: [{ id: existing.ideaId }, { _id: toObjectId(existing.ideaId) }] }, { $inc: { commentsCount: -1 } });
+      }
+      return res.status(204).send();
+    }
+
+    const idx = memoryComments.findIndex((c) => c.id === id || c._id === id);
+    if (idx === -1) return res.status(404).json({ message: "Comment not found" });
+    const existing = memoryComments[idx];
+    if (req.auth && existing.authorEmail && req.auth.email && existing.authorEmail !== req.auth.email) {
+      return res.status(403).json({ message: "Not allowed to delete this comment" });
+    }
+    memoryComments.splice(idx, 1);
+    memoryIdeas = memoryIdeas.map((i) => (i.id === existing.ideaId ? { ...i, commentsCount: Math.max(0, (i.commentsCount || 1) - 1) } : i));
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to delete comment", error: error.message });
+  }
+});
+
 app.post("/ideas", requireAuth, async (req, res) => {
   try {
     const newIdea = normalizeIdea({
@@ -340,6 +462,7 @@ async function startServer() {
       await client.connect();
       const db = client.db("IdeaVault");
       ideasCollection = db.collection("Ideas");
+      commentsCollection = db.collection("Comments");
       await client.db("admin").command({ ping: 1 });
       console.log("Connected to MongoDB and ready to serve ideas.");
     } else {
