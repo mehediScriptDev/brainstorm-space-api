@@ -372,9 +372,15 @@ app.delete("/comments/:id", requireAuth, async (req, res) => {
 
 app.post("/ideas", requireAuth, async (req, res) => {
   try {
+    // Extract author info from request body or auth payload
+    const authorEmail = req.body?.authorEmail || (req.auth && req.auth.email ? req.auth.email : "");
+    const authorName = req.body?.authorName || (req.auth && req.auth.name ? req.auth.name : "");
+
     const newIdea = normalizeIdea({
       ...req.body,
       id: req.body?.id || `idea-${Date.now()}`,
+      authorEmail: authorEmail,
+      authorName: authorName,
       createdAt: req.body?.createdAt || new Date().toISOString(),
       likes: Number(req.body?.likes || 0),
       commentsCount: Number(req.body?.commentsCount || 0)
@@ -418,6 +424,19 @@ app.put("/ideas/:id", requireAuth, async (req, res) => {
     return res.json(updatedIdea);
   } catch (error) {
     return res.status(500).json({ message: "Failed to update idea", error: error.message });
+  }
+});
+
+app.get("/comments", async (req, res) => {
+  try {
+    if (commentsCollection) {
+      const docs = await commentsCollection.find({}).sort({ timestamp: -1 }).toArray();
+      return res.json(docs.map(normalizeComment));
+    }
+
+    return res.json(memoryComments.map(normalizeComment));
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to load comments", error: error.message });
   }
 });
 
